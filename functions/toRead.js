@@ -1,82 +1,69 @@
 import "dotenv/config";
 
-import { Window } from "happy-dom";
+const USER_ID = process.env.USER_ID || '3519176';
 
-const USERNAME = process.env.USERNAME;
-
-const createStorygraphUrl = (target, username, page = 1) =>
-  `https://app.thestorygraph.com/${target}/${username}?page=${page}`;
-
-const fetchPageHtml = async (url) => {
+const fetchFromRss = async (shelf) => {
+  const url = `https://www.goodreads.com/review/list_rss/${USER_ID}?key=&shelf=${shelf}`;
+  
   const response = await fetch(url, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+      'Accept': 'application/rss+xml, application/xml, text/xml, */*',
       'Accept-Language': 'en-US,en;q=0.5',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Connection': 'keep-alive',
-      'Upgrade-Insecure-Requests': '1',
-      'Cache-Control': 'max-age=0',
     }
   });
+  
   if (!response.ok) {
-    throw new Error(`Failed to fetch URL: ${url}, Status: ${response.status}`);
+    throw new Error(`Failed to fetch RSS: ${response.status}`);
   }
-  return await response.text();
-};
-
-const parseBookPane = (pane) => {
-  const titleEl = pane.querySelector("h3 a");
-  const authorEl = pane.querySelector("p");
-  const imgEl = pane.querySelector("img");
-  const link = pane.querySelector("a")?.href;
-  return {
-    id: link ? link.split("/").pop() : null,
-    title: titleEl?.textContent?.trim() || "",
-    author: authorEl?.textContent?.trim() || "",
-    coverUrl: imgEl?.src || null,
-  };
-};
-
-const fetchAllBookPanes = async (target, username, limit = Infinity) => {
-  let page = 1;
-  let hasMorePages = true;
-  const allBookPanes = [];
-
-  while (hasMorePages) {
-    const url = createStorygraphUrl(target, username, page);
-    const htmlString = await fetchPageHtml(url);
-    const window = new Window();
-    const document = window.document;
-    document.documentElement.innerHTML = htmlString;
-    const bookPanes = [...document.querySelectorAll(".book-pane")];
-
-    if (bookPanes.length === 0) break;
-
-    for (let i = 0; i < limit && i < bookPanes.length; i++) {
-      allBookPanes.push(bookPanes[i]);
+  
+  const xml = await response.text();
+  
+  const books = [];
+  const itemRegex = /<item>([\s\S]*?)<\/item>/g;
+  let match;
+  
+  while ((match = itemRegex.exec(xml)) !== null) {
+    const item = match[1];
+    
+    const getTag = (tag) => {
+      const regex = new RegExp(`<${tag}><!\[CDATA\[([\s\S]*?)\]\]><\/${tag}|<${tag}>([\s\S]*?)<\/${tag}>`, 'i');
+      const m = item.match(regex);
+      return m ? (m[1] || m[2] || '').trim() : '';
+    };
+    
+    const title = getTag('title');
+    const author = getTag('author_name');
+    const coverUrl = getTag('book_medium_image_url') || getTag('book_image_url');
+    const isbn = getTag('isbn');
+    const rating = getTag('user_rating');
+    const dateRead = getTag('user_read_at');
+    
+    if (title && !title.includes('bookshelf:') && author) {
+      books.push({
+        title,
+        author,
+        coverUrl,
+        isbn,
+        rating: rating ? parseInt(rating) : 0,
+        dateRead
+      });
     }
-    hasMorePages = bookPanes.length >= 10;
-    page++;
-    if (page > 5 || allBookPanes.length >= limit) break;
   }
-
-  return allBookPanes.filter((pane) => pane != null);
+  
+  return books;
 };
 
 export const handler = async (req) => {
-  const target = "to-read";
-  const username = req.queryStringParameters?.username || USERNAME;
-  const limit = parseInt(req.queryStringParameters?.limit) || Infinity;
-
+  const shelf = req.queryStringParameters?.shelf || 'to-read';
+  
   try {
-    const bookPanes = await fetchAllBookPanes(target, username, limit);
-    const data = bookPanes.map((pane) => parseBookPane(pane));
-
+    const books = await fetchFromRss(shelf);
+    
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
+      body: JSON.stringify(books),
     };
   } catch (error) {
     console.error("Error:", error);
